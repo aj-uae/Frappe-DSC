@@ -14,8 +14,36 @@ import (
 	"math/big"
 	"net"
 	"os"
+	"runtime"
 	"time"
 )
+
+// macOS (10.15+) rejects TLS server certificates valid for more than 825 days, even
+// when the user has trusted them, so Safari and Chrome on a Mac refuse a 10-year cert.
+const darwinMaxCertDays = 820
+
+func certLifetime() time.Duration {
+	if runtime.GOOS == "darwin" {
+		return darwinMaxCertDays * 24 * time.Hour
+	}
+	return 10 * 365 * 24 * time.Hour
+}
+
+// certUsable reports whether an existing cert can be kept: on macOS it must fit the
+// 825-day limit and not be close to expiry.
+func certUsable(cert tls.Certificate) bool {
+	if runtime.GOOS != "darwin" {
+		return true
+	}
+	leaf, err := x509.ParseCertificate(cert.Certificate[0])
+	if err != nil {
+		return false
+	}
+	if leaf.NotAfter.Sub(leaf.NotBefore) > 825*24*time.Hour {
+		return false
+	}
+	return time.Until(leaf.NotAfter) > 30*24*time.Hour
+}
 
 // EnsureTLSCert loads or generates the agent's self-signed TLS certificate.
 // Returns the tls.Certificate and the SHA-256 fingerprint of the cert DER.
@@ -23,11 +51,11 @@ func EnsureTLSCert(cfg *Config) (tls.Certificate, string, error) {
 	// Try loading existing cert
 	if fileExists(cfg.TLSCertPath) && fileExists(cfg.TLSKeyPath) {
 		cert, err := tls.LoadX509KeyPair(cfg.TLSCertPath, cfg.TLSKeyPath)
-		if err == nil {
+		if err == nil && certUsable(cert) {
 			fp := certFingerprint(cert.Certificate[0])
 			return cert, fp, nil
 		}
-		// If loading fails, regenerate
+		// If loading fails or the cert is no longer acceptable, regenerate
 	}
 
 	// Generate new self-signed certificate
@@ -58,7 +86,7 @@ func generateSelfSignedCert(certPath, keyPath string) (tls.Certificate, error) {
 			Organization: []string{"DSC Bridge Agent"},
 		},
 		NotBefore:             time.Now(),
-		NotAfter:              time.Now().Add(10 * 365 * 24 * time.Hour), // 10 years
+		NotAfter:              time.Now().Add(certLifetime()),
 		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		BasicConstraintsValid: true,
