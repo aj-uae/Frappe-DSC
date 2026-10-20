@@ -759,6 +759,9 @@ def build_stamp_style(sig_template, profile, stamp_text):
 	)
 
 
+_MAX_SEAL_HEIGHT = 72  # PDF points
+
+
 class _RightAlignedTextBox(pyhanko_text.TextBox):
 	"""pyHanko text box whose lines are right-aligned instead of left-aligned."""
 
@@ -800,13 +803,19 @@ class _RightAlignedTextStamp(pyhanko_stamp.TextStamp):
 		# the image (company seal) just left of the right-aligned text instead
 		# of at the far left of the box.
 		text_width = self.text_box.box.width
+		seal_margin = max((self.box.height - _MAX_SEAL_HEIGHT) / 2, 0)
 		style = self.style
 		self.style = dataclasses.replace(
 			style,
 			background_layout=pyhanko_layout.SimpleBoxLayoutRule(
 				x_align=pyhanko_layout.AxisAlignment.ALIGN_MAX,
 				y_align=pyhanko_layout.AxisAlignment.ALIGN_MID,
-				margins=pyhanko_layout.Margins(left=0, right=text_width + 4, top=0, bottom=0),
+				# Cap the seal at ~25 mm so a tall signature box (which can overlap
+				# the surrounding print lines, as a rubber stamp would) doesn't make
+				# it huge; it stays vertically centred on the text.
+				margins=pyhanko_layout.Margins(
+					left=0, right=text_width + 4, top=seal_margin, bottom=seal_margin
+				),
 			),
 		)
 		try:
