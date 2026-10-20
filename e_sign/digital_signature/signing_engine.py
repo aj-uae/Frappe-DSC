@@ -32,7 +32,6 @@ from pyhanko import stamp as pyhanko_stamp
 from pyhanko.pdf_utils import layout as pyhanko_layout
 from pyhanko.pdf_utils import text as pyhanko_text
 from pyhanko.pdf_utils.font.basic import SimpleFontEngineFactory
-from pyhanko.pdf_utils.font.opentype import GlyphAccumulatorFactory
 from pyhanko.pdf_utils.images import PdfImage
 from pyhanko.pdf_utils.incremental_writer import IncrementalPdfFileWriter
 from pyhanko.sign import fields as sig_fields
@@ -620,7 +619,7 @@ _STANDARD_FONTS = {
 # Fonts shipped with the app (embedded into the PDF), so the stamp can match the
 # print format. Lato is the font of the Rocin Design print formats. pyHanko
 # writes glyph widths in raw font units, so bundled fonts must use 1000 units/em
-# (Lato's 2000 was rescaled with fontTools.ttLib.scaleUpem).
+# (Lato's 2000 was rescaled with fontTools.ttLib.scaleUpem, then subset to Latin).
 _BUNDLED_FONTS = {
 	"lato": "Lato-Regular.ttf",
 }
@@ -636,11 +635,21 @@ def build_stamp_style(sig_template, profile, stamp_text):
 	"""
 	family = ((sig_template and sig_template.stamp_font_family) or "Helvetica").strip().lower()
 	font_size = float((sig_template and sig_template.stamp_font_size) or 8)
+	font = None
 	if family in _BUNDLED_FONTS:
-		# The OpenType engine shapes text at its own size; it must match the
-		# text box's size or glyphs are spaced for the wrong size.
-		font = GlyphAccumulatorFactory(os.path.join(_FONT_DIR, _BUNDLED_FONTS[family]), font_size=font_size)
-	else:
+		try:
+			# Needs pyHanko's opentype extra (fontTools, uharfbuzz); fall back to
+			# Helvetica rather than fail the signature if it isn't installed.
+			from pyhanko.pdf_utils.font.opentype import GlyphAccumulatorFactory
+
+			# The OpenType engine shapes text at its own size; it must match the
+			# text box's size or glyphs are spaced for the wrong size.
+			font = GlyphAccumulatorFactory(
+				os.path.join(_FONT_DIR, _BUNDLED_FONTS[family]), font_size=font_size
+			)
+		except ImportError:
+			frappe.log_error(title="DSC stamp font unavailable, using Helvetica")
+	if font is None:
 		font_name, avg_width = _STANDARD_FONTS.get(family, _STANDARD_FONTS["helvetica"])
 		font = SimpleFontEngineFactory(font_name, avg_width)
 	border = 1 if (sig_template and sig_template.stamp_border) else 0
