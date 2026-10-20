@@ -123,7 +123,16 @@ func DefaultPKCS11Paths() []string {
 			"/usr/lib/x86_64-linux-gnu/pkcs11/p11-kit-trust.so",
 		}
 	case "darwin":
-		return []string{
+		paths := []string{
+			// --- WatchData ProxKey (macOS driver installs under /usr/local/lib) ---
+			"/usr/local/lib/libwdpkcs.dylib",
+			"/usr/local/lib/libWDPKCS.dylib",
+			"/usr/local/lib/libSignatureP11.dylib",
+			"/usr/local/lib/libProxKeyP11.dylib",
+			"/Library/WatchData/ProxKey/lib/libwdpkcs.dylib",
+			// --- Feitian ePass2003 / Hypersecu (Castle library) ---
+			"/usr/local/lib/libcastle.1.0.0.dylib",
+			"/usr/local/lib/libcastle.dylib",
 			// --- SoftHSM2 (testing) ---
 			"/usr/local/lib/softhsm/libsofthsm2.so",
 			"/opt/homebrew/lib/softhsm/libsofthsm2.so",
@@ -137,9 +146,34 @@ func DefaultPKCS11Paths() []string {
 			"/usr/local/lib/libykcs11.dylib",
 			"/opt/homebrew/lib/libykcs11.dylib",
 		}
+		// Token vendors name their macOS PKCS#11 module inconsistently, so also
+		// pick up any PKCS#11-looking dylib installed in the usual driver folders.
+		for _, pattern := range []string{
+			"/usr/local/lib/*[pP][kK][cC][sS]*.dylib",
+			"/usr/local/lib/*[pP]11*.dylib",
+			"/Library/*/*/lib/*[pP][kK][cC][sS]*.dylib",
+			"/Library/Frameworks/*.framework/Versions/*/*[pP][kK][cC][sS]*.dylib",
+		} {
+			matches, _ := filepath.Glob(pattern)
+			for _, m := range matches {
+				if !containsPath(paths, m) {
+					paths = append(paths, m)
+				}
+			}
+		}
+		return paths
 	default:
 		return nil
 	}
+}
+
+func containsPath(paths []string, p string) bool {
+	for _, x := range paths {
+		if x == p {
+			return true
+		}
+	}
+	return false
 }
 
 // LoadConfig reads config from the data directory, falling back to defaults.

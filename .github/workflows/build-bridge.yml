@@ -103,6 +103,11 @@ jobs:
             build/dsc-bridge-darwin-amd64 \
             build/dsc-bridge-darwin-arm64
           file build/dsc-bridge-darwin-universal
+      - name: Build macOS installer (.pkg)
+        run: |
+          chmod +x build.sh
+          ./build.sh darwin-pkg
+          pkgutil --payload-files build/dsc-bridge-1.0.0.pkg | head
       - uses: actions/upload-artifact@v4
         with:
           name: dsc-bridge-macos
@@ -110,6 +115,7 @@ jobs:
             dsc_bridge/build/dsc-bridge-darwin-amd64
             dsc_bridge/build/dsc-bridge-darwin-arm64
             dsc_bridge/build/dsc-bridge-darwin-universal
+            dsc_bridge/build/dsc-bridge-1.0.0.pkg
 
   # ─── Release (only on tag push) ───────────────────────────────────────────
   release:
@@ -129,6 +135,7 @@ jobs:
           cp artifacts/dsc-bridge-macos/dsc-bridge-darwin-amd64    release/
           cp artifacts/dsc-bridge-macos/dsc-bridge-darwin-arm64    release/
           cp artifacts/dsc-bridge-macos/dsc-bridge-darwin-universal release/
+          cp artifacts/dsc-bridge-macos/dsc-bridge-1.0.0.pkg release/
           ls -la release/
       - uses: softprops/action-gh-release@v2
         with:
