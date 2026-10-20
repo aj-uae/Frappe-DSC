@@ -32,7 +32,9 @@ from asn1crypto import algos, cms, core, x509 as asn1_x509
 from pyhanko import stamp as pyhanko_stamp
 from pyhanko.pdf_utils import layout as pyhanko_layout
 from pyhanko.pdf_utils import text as pyhanko_text
-from pyhanko.pdf_utils.font.basic import SimpleFontEngineFactory
+from pyhanko.pdf_utils import generic as pdf_generic
+from pyhanko.pdf_utils.font import api as pyhanko_font_api
+from pyhanko.pdf_utils.font.basic import SimpleFontEngine, SimpleFontEngineFactory
 from pyhanko.pdf_utils.images import PdfImage
 from pyhanko.pdf_utils.incremental_writer import IncrementalPdfFileWriter
 from pyhanko.sign import fields as sig_fields
@@ -617,14 +619,87 @@ _STANDARD_FONTS = {
 	"courier": ("Courier", 0.6),
 }
 
-# Fonts shipped with the app (embedded into the PDF), so the stamp can match the
-# print format. Lato is the font of the Rocin Design print formats. pyHanko
-# writes glyph widths in raw font units, so bundled fonts must use 1000 units/em
-# (Lato's 2000 was rescaled with fontTools.ttLib.scaleUpem, then subset to Latin).
+# Fonts shipped with the app and embedded into the PDF, so the stamp can match
+# the print format (Lato is the Rocin Design print font). Each font has a
+# <name>.metrics.json with its WinAnsi glyph widths (1000 units/em), generated
+# with fontTools from the .ttf, so no font library is needed at runtime.
 _BUNDLED_FONTS = {
-	"lato": "Lato-Regular.ttf",
+	"lato": "Lato-Regular",
 }
 _FONT_DIR = os.path.join(os.path.dirname(__file__), "fonts")
+
+
+class _EmbeddedTrueTypeEngine(SimpleFontEngine):
+	"""Single-byte (WinAnsi) TrueType font engine with real glyph widths."""
+
+	def __init__(self, writer, font_name):
+		with open(os.path.join(_FONT_DIR, font_name + ".metrics.json")) as f:
+			self.metrics = json.load(f)
+		self.font_file = os.path.join(_FONT_DIR, font_name + ".ttf")
+		super().__init__(writer, self.metrics["base_font"], 0.5)
+
+	def _encode(self, txt):
+		return txt.encode("cp1252", errors="replace")
+
+	def shape(self, txt):
+		m = self.metrics
+		raw = self._encode(txt)
+		width = 0
+		for code in raw:
+			idx = code - m["first_char"]
+			w = m["widths"][idx] if 0 <= idx < len(m["widths"]) else 0
+			width += w or m["missing_width"]
+		escaped = raw.replace(b"\\", b"\\\\").replace(b"(", b"\\(").replace(b")", b"\\)")
+		return pyhanko_font_api.ShapeResult(
+			graphics_ops=b"(" + escaped + b") Tj", x_advance=width / 1000, y_advance=0
+		)
+
+	def as_resource(self):
+		m = self.metrics
+		with open(self.font_file, "rb") as f:
+			font_bytes = f.read()
+		font_stream = pdf_generic.StreamObject(
+			{pdf_generic.NameObject("/Length1"): pdf_generic.NumberObject(len(font_bytes))},
+			stream_data=font_bytes,
+		)
+		font_stream.compress()
+		name = pdf_generic.NameObject
+		num = pdf_generic.NumberObject
+		descriptor = pdf_generic.DictionaryObject(
+			{
+				name("/Type"): name("/FontDescriptor"),
+				name("/FontName"): name("/" + m["base_font"]),
+				name("/Flags"): num(32),
+				name("/FontBBox"): pdf_generic.ArrayObject(map(num, m["bbox"])),
+				name("/ItalicAngle"): num(0),
+				name("/Ascent"): num(m["ascent"]),
+				name("/Descent"): num(m["descent"]),
+				name("/CapHeight"): num(m["cap_height"]),
+				name("/StemV"): num(80),
+				name("/MissingWidth"): num(m["missing_width"]),
+				name("/FontFile2"): self.writer.add_object(font_stream),
+			}
+		)
+		return pdf_generic.DictionaryObject(
+			{
+				name("/Type"): name("/Font"),
+				name("/Subtype"): name("/TrueType"),
+				name("/BaseFont"): name("/" + m["base_font"]),
+				name("/Encoding"): name("/WinAnsiEncoding"),
+				name("/FirstChar"): num(m["first_char"]),
+				name("/LastChar"): num(m["first_char"] + len(m["widths"]) - 1),
+				name("/Widths"): pdf_generic.ArrayObject(map(num, m["widths"])),
+				name("/FontDescriptor"): self.writer.add_object(descriptor),
+			}
+		)
+
+
+class _EmbeddedTrueTypeFactory(pyhanko_font_api.FontEngineFactory):
+	def __init__(self, font_name):
+		self.font_name = font_name
+
+	def create_font_engine(self, writer, obj_stream=None):
+		return _EmbeddedTrueTypeEngine(writer, self.font_name)
 
 
 def build_stamp_style(sig_template, profile, stamp_text):
@@ -639,20 +714,8 @@ def build_stamp_style(sig_template, profile, stamp_text):
 	# truncated in the PDF while text is laid out at the full size.
 	font_size = max(round(float((sig_template and sig_template.stamp_font_size) or 8)), 1)
 	font = None
-	if family in _BUNDLED_FONTS:
-		try:
-			# Needs pyHanko's opentype extra (fontTools, uharfbuzz); fall back to
-			# Helvetica rather than fail the signature if it isn't installed.
-			from pyhanko.pdf_utils.font.opentype import GlyphAccumulatorFactory
-
-			font_path = os.path.join(_FONT_DIR, _BUNDLED_FONTS[family])
-			if not os.path.exists(font_path):
-				raise FileNotFoundError(font_path)
-			# The OpenType engine shapes text at its own size; it must match the
-			# text box's size or glyphs are spaced for the wrong size.
-			font = GlyphAccumulatorFactory(font_path, font_size=font_size)
-		except (ImportError, FileNotFoundError):
-			frappe.log_error(title="DSC stamp font unavailable, using Helvetica")
+	if family in _BUNDLED_FONTS and os.path.exists(os.path.join(_FONT_DIR, _BUNDLED_FONTS[family] + ".ttf")):
+		font = _EmbeddedTrueTypeFactory(_BUNDLED_FONTS[family])
 	if font is None:
 		font_name, avg_width = _STANDARD_FONTS.get(family, _STANDARD_FONTS["helvetica"])
 		font = SimpleFontEngineFactory(font_name, avg_width)

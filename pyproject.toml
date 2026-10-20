@@ -9,7 +9,7 @@ readme = "README.md"
 dynamic = ["version"]
 dependencies = [
     # "frappe~=15.0.0" # Installed and managed by bench.
-    "pyhanko[image-support,opentype]",
+    "pyhanko[image-support]",
     "asn1crypto",
     # Reads text coordinates from the rendered PDF to locate the dynamic
     # signature-anchor placeholder (see digital_signature/signature_anchor.py).
