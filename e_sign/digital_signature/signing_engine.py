@@ -14,6 +14,7 @@ Uses pyHanko's "interrupted signing" workflow:
 
 import asyncio
 import base64
+import dataclasses
 import hashlib
 import json
 import os
@@ -672,12 +673,7 @@ def build_stamp_style(sig_template, profile, stamp_text):
 		stamp_text=stamp_text.replace("%", "%%"),
 		border_width=border,
 		background=background,
-		background_opacity=1.0 if background else 0.6,
-		background_layout=pyhanko_layout.SimpleBoxLayoutRule(
-			x_align=pyhanko_layout.AxisAlignment.ALIGN_MIN,
-			y_align=pyhanko_layout.AxisAlignment.ALIGN_MID,
-			margins=pyhanko_layout.Margins.uniform(2),
-		),
+		background_opacity=1.0,
 		inner_content_layout=pyhanko_layout.SimpleBoxLayoutRule(
 			# Flush right, like the "For <company>" and "Authorised Signatory"
 			# lines of the print formats.
@@ -735,6 +731,25 @@ class _RightAlignedTextStamp(pyhanko_stamp.TextStamp):
 			params.update(self.text_params)
 		tb.content = self.style.stamp_text % params
 		return tb.render()
+
+	def _render_background(self):
+		# Inner content is rendered first, so the text width is known here: put
+		# the image (company seal) just left of the right-aligned text instead
+		# of at the far left of the box.
+		text_width = self.text_box.box.width
+		style = self.style
+		self.style = dataclasses.replace(
+			style,
+			background_layout=pyhanko_layout.SimpleBoxLayoutRule(
+				x_align=pyhanko_layout.AxisAlignment.ALIGN_MAX,
+				y_align=pyhanko_layout.AxisAlignment.ALIGN_MID,
+				margins=pyhanko_layout.Margins(left=0, right=text_width + 4, top=0, bottom=0),
+			),
+		)
+		try:
+			return super()._render_background()
+		finally:
+			self.style = style
 
 
 class _RightAlignedTextStampStyle(pyhanko_stamp.TextStampStyle):
