@@ -111,6 +111,9 @@ jobs:
       - name: Smoke-test the .pkg (install, bridge answers on 127.0.0.1:4645)
         run: |
           echo "console user: $(stat -f %Su /dev/console)"
+          # Simulate leftovers from an older .pkg that ran as root: a root-owned data dir.
+          D="$HOME/Library/Application Support/dsc-bridge"
+          sudo mkdir -p "$D" && sudo sh -c "echo stale > '$D/tls_cert.pem'; echo stale > '$D/tls_key.pem'" && sudo chmod -R go-rwx "$D" && sudo chown -R root "$D"
           sudo installer -pkg build/dsc-bridge-1.0.0.pkg -target /
           ok=""
           for i in $(seq 1 15); do

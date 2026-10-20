@@ -151,6 +151,10 @@ func DefaultPKCS11Paths() []string {
 		for _, pattern := range []string{
 			"/usr/local/lib/*[pP][kK][cC][sS]*.dylib",
 			"/usr/local/lib/*[pP]11*.dylib",
+			// ProxKey's macOS driver installs into its own folder, e.g. /usr/local/lib/wdProxKeyUsbKeyTool/
+			"/usr/local/lib/wd*/*[pP][kK][cC][sS]*.dylib",
+			"/usr/local/lib/wd*/*[pP]11*.dylib",
+			"/usr/local/lib/wd*/lib/*.dylib",
 			"/Library/*/*/lib/*[pP][kK][cC][sS]*.dylib",
 			"/Library/Frameworks/*.framework/Versions/*/*[pP][kK][cC][sS]*.dylib",
 		} {

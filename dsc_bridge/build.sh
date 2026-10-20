@@ -166,6 +166,13 @@ launchctl unload /var/root/Library/LaunchAgents/com.esign.dsc-bridge.plist 2>/de
 rm -f /var/root/Library/LaunchAgents/com.esign.dsc-bridge.plist
 pkill -u root -f "DSC Bridge.app/Contents/MacOS/dsc-bridge" 2>/dev/null || true
 launchctl bootout "gui/$CONSOLE_UID/com.esign.dsc-bridge" 2>/dev/null || true
+# Older .pkg versions ran as root with HOME pointing at the signer's home, leaving the
+# data dir (cert, key, config, log) owned by root, so the signer's bridge could not
+# read its own files and post-install failed before the LaunchAgent was written.
+DATA_DIR="$USER_HOME/Library/Application Support/dsc-bridge"
+[ -d "$DATA_DIR" ] && chown -R "$CONSOLE_USER":staff "$DATA_DIR"
+[ -d "$USER_HOME/Library/LaunchAgents" ] && chown "$CONSOLE_USER":staff "$USER_HOME/Library/LaunchAgents"
+rm -f /tmp/dsc-bridge.log /tmp/dsc-bridge.err.log
 launchctl asuser "$CONSOLE_UID" sudo -u "$CONSOLE_USER" "$BIN" --post-install || true
 
 # Trusting a cert in the System keychain needs root, so do it here for the user's cert.
