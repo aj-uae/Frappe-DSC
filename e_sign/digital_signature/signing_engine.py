@@ -20,6 +20,7 @@ import os
 import uuid
 from datetime import datetime, timezone
 from io import BytesIO
+from zoneinfo import ZoneInfo
 
 import frappe
 from frappe.utils import now_datetime
@@ -27,6 +28,11 @@ from frappe.utils import now_datetime
 from e_sign.digital_signature.signature_anchor import locate_signature_anchor
 
 from asn1crypto import algos, cms, core, x509 as asn1_x509
+from pyhanko import stamp as pyhanko_stamp
+from pyhanko.pdf_utils import layout as pyhanko_layout
+from pyhanko.pdf_utils import text as pyhanko_text
+from pyhanko.pdf_utils.font.basic import SimpleFontEngineFactory
+from pyhanko.pdf_utils.images import PdfImage
 from pyhanko.pdf_utils.incremental_writer import IncrementalPdfFileWriter
 from pyhanko.sign import fields as sig_fields
 from pyhanko.sign.signers.pdf_byterange import PreparedByteRangeDigest
@@ -155,6 +161,7 @@ def prepare_pdf_for_signing(
 	location = signer_location_text or settings.default_location or ""
 	signer_name = profile.certificate_common_name or profile.label or profile.profile_name
 	stamp_text = build_stamp_text(sig_template, profile, signer_location_text=location)
+	stamp_style = build_stamp_style(sig_template, profile, stamp_text)
 
 	session_id = str(uuid.uuid4())
 	signer_cert = asn1_x509.Certificate.load(cert_der)
@@ -189,6 +196,7 @@ def prepare_pdf_for_signing(
 	pdf_signer = PdfSigner(
 		signature_meta=sig_meta,
 		signer=placeholder_signer,
+		stamp_style=stamp_style,
 		new_field_spec=new_field,
 	)
 
@@ -560,12 +568,16 @@ def build_stamp_text(sig_template, profile, signer_location_text=None):
 		str with the stamp text
 	"""
 	lines = []
-
-	if sig_template.stamp_show_digitally_signed_by:
-		lines.append("Digitally signed by")
-
-	if sig_template.stamp_show_signer_name:
+	if not sig_template:
 		name = profile.certificate_common_name or profile.label or profile.profile_name
+		return f"Digitally signed by {name}"
+
+	name = profile.certificate_common_name or profile.label or profile.profile_name
+	if sig_template.stamp_show_digitally_signed_by and sig_template.stamp_show_signer_name:
+		lines.append(f"Digitally signed by {name}")
+	elif sig_template.stamp_show_digitally_signed_by:
+		lines.append("Digitally signed")
+	elif sig_template.stamp_show_signer_name:
 		lines.append(name)
 
 	if sig_template.stamp_show_designation:
@@ -575,7 +587,8 @@ def build_stamp_text(sig_template, profile, signer_location_text=None):
 
 	if sig_template.stamp_show_timestamp:
 		fmt = sig_template.stamp_timestamp_format or "%d-%m-%Y %H:%M:%S %Z"
-		lines.append(f"Date: {fmt}")  # actual time filled at sign time
+		now = datetime.now(ZoneInfo(frappe.utils.get_system_timezone()))
+		lines.append(f"Date: {now.strftime(fmt)}")
 
 	if sig_template.stamp_show_reason:
 		settings = frappe.get_single("DSC Settings")
@@ -590,6 +603,79 @@ def build_stamp_text(sig_template, profile, signer_location_text=None):
 		lines.append(f"Location: {location}")
 
 	return "\n".join(lines)
+
+
+_STANDARD_FONTS = {
+	# PDF standard-14 fonts need no embedding; avg_width is a rough glyph
+	# width (in em) pyHanko uses to wrap and size the text box.
+	"helvetica": ("Helvetica", 0.5),
+	"helvetica-bold": ("Helvetica-Bold", 0.55),
+	"times": ("Times-Roman", 0.45),
+	"times-roman": ("Times-Roman", 0.45),
+	"times-bold": ("Times-Bold", 0.5),
+	"courier": ("Courier", 0.6),
+}
+
+
+def build_stamp_style(sig_template, profile, stamp_text):
+	"""Build the pyHanko stamp style from the template's Stamp Style settings.
+
+	Without an explicit style pyHanko draws its own default appearance
+	(monospace "Digitally signed by … Timestamp: … UTC" over the pyHanko logo,
+	with a thick border), ignoring every stamp option on the template.
+	"""
+	family = ((sig_template and sig_template.stamp_font_family) or "Helvetica").strip().lower()
+	font_name, avg_width = _STANDARD_FONTS.get(family, _STANDARD_FONTS["helvetica"])
+	font_size = float((sig_template and sig_template.stamp_font_size) or 8)
+	border = 1 if (sig_template and sig_template.stamp_border) else 0
+
+	background = None
+	if sig_template:
+		image_field = None
+		if sig_template.stamp_include_signature_image and profile.signature_image:
+			image_field = profile.signature_image
+		elif sig_template.stamp_include_seal_image and profile.seal_image:
+			image_field = profile.seal_image
+		if image_field:
+			background = _load_stamp_image(image_field)
+
+	return pyhanko_stamp.TextStampStyle(
+		# pyHanko %-formats stamp_text with its own params; escape literal %.
+		stamp_text=stamp_text.replace("%", "%%"),
+		border_width=border,
+		background=background,
+		background_opacity=1.0 if background else 0.6,
+		background_layout=pyhanko_layout.SimpleBoxLayoutRule(
+			x_align=pyhanko_layout.AxisAlignment.ALIGN_MIN,
+			y_align=pyhanko_layout.AxisAlignment.ALIGN_MID,
+			margins=pyhanko_layout.Margins.uniform(2),
+		),
+		inner_content_layout=pyhanko_layout.SimpleBoxLayoutRule(
+			x_align=(
+				pyhanko_layout.AxisAlignment.ALIGN_MAX if background else pyhanko_layout.AxisAlignment.ALIGN_MID
+			),
+			y_align=pyhanko_layout.AxisAlignment.ALIGN_MID,
+			margins=pyhanko_layout.Margins.uniform(2),
+		),
+		text_box_style=pyhanko_text.TextBoxStyle(
+			font=SimpleFontEngineFactory(font_name, avg_width),
+			font_size=font_size,
+			# pyHanko's layout uses Fraction(width, height): leading must be an int.
+			leading=max(round(font_size * 1.25), 1),
+		),
+	)
+
+
+def _load_stamp_image(file_url):
+	"""Load a profile image (signature/seal) attached as a Frappe File."""
+	try:
+		from PIL import Image
+
+		file_doc = frappe.get_doc("File", {"file_url": file_url})
+		return PdfImage(Image.open(BytesIO(file_doc.get_content())))
+	except Exception:
+		frappe.log_error(title="DSC stamp image could not be loaded")
+		return None
 
 
 def get_session_info(session_id):
