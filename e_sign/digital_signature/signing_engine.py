@@ -634,7 +634,9 @@ def build_stamp_style(sig_template, profile, stamp_text):
 	with a thick border), ignoring every stamp option on the template.
 	"""
 	family = ((sig_template and sig_template.stamp_font_family) or "Helvetica").strip().lower()
-	font_size = float((sig_template and sig_template.stamp_font_size) or 8)
+	# pyHanko writes the font size with %d, so a fractional size is silently
+	# truncated in the PDF while text is laid out at the full size.
+	font_size = max(round(float((sig_template and sig_template.stamp_font_size) or 8)), 1)
 	font = None
 	if family in _BUNDLED_FONTS:
 		try:
@@ -665,7 +667,7 @@ def build_stamp_style(sig_template, profile, stamp_text):
 		if image_field:
 			background = _load_stamp_image(image_field)
 
-	return pyhanko_stamp.TextStampStyle(
+	return _RightAlignedTextStampStyle(
 		# pyHanko %-formats stamp_text with its own params; escape literal %.
 		stamp_text=stamp_text.replace("%", "%%"),
 		border_width=border,
@@ -677,19 +679,67 @@ def build_stamp_style(sig_template, profile, stamp_text):
 			margins=pyhanko_layout.Margins.uniform(2),
 		),
 		inner_content_layout=pyhanko_layout.SimpleBoxLayoutRule(
-			x_align=(
-				pyhanko_layout.AxisAlignment.ALIGN_MAX if background else pyhanko_layout.AxisAlignment.ALIGN_MID
-			),
+			# Flush right, like the "For <company>" and "Authorised Signatory"
+			# lines of the print formats.
+			x_align=pyhanko_layout.AxisAlignment.ALIGN_MAX,
 			y_align=pyhanko_layout.AxisAlignment.ALIGN_MID,
-			margins=pyhanko_layout.Margins.uniform(2),
+			margins=pyhanko_layout.Margins(left=2, right=0, top=2, bottom=2),
 		),
 		text_box_style=pyhanko_text.TextBoxStyle(
 			font=font,
 			font_size=font_size,
 			# pyHanko's layout uses Fraction(width, height): leading must be an int.
-			leading=max(round(font_size * 1.25), 1),
+			leading=round(font_size * 1.25),
+			# No inner padding, so the text lines up with the print format's edge.
+			box_layout_rule=pyhanko_layout.SimpleBoxLayoutRule(
+				x_align=pyhanko_layout.AxisAlignment.ALIGN_MAX,
+				y_align=pyhanko_layout.AxisAlignment.ALIGN_MID,
+				margins=pyhanko_layout.Margins.uniform(0),
+			),
 		),
 	)
+
+
+class _RightAlignedTextBox(pyhanko_text.TextBox):
+	"""pyHanko text box whose lines are right-aligned instead of left-aligned."""
+
+	def put_string_line(self, txt):
+		ops, extent = super().put_string_line(txt)
+		self._line_extents.append(extent)
+		return ops, extent
+
+	@property
+	def content(self):
+		return self._content
+
+	@content.setter
+	def content(self, content):
+		self._line_extents = []
+		pyhanko_text.TextBox.content.fset(self, content)
+		width = self._nat_text_width
+		# Shift each line right by its slack, then undo the shift so the next
+		# line starts from the left edge again.
+		self._wrapped_lines = [
+			b"%g 0 Td %s %g 0 Td" % (width - extent, ops, extent - width)
+			for ops, extent in zip(self._wrapped_lines, self._line_extents, strict=True)
+		]
+
+
+class _RightAlignedTextStamp(pyhanko_stamp.TextStamp):
+	def _text_layout(self):
+		self.text_box = tb = _RightAlignedTextBox(
+			self.style.text_box_style, writer=self.writer, resources=self.resources, box=None
+		)
+		params = self.get_default_text_params()
+		if self.text_params is not None:
+			params.update(self.text_params)
+		tb.content = self.style.stamp_text % params
+		return tb.render()
+
+
+class _RightAlignedTextStampStyle(pyhanko_stamp.TextStampStyle):
+	def create_stamp(self, writer, box, text_params):
+		return _RightAlignedTextStamp(writer=writer, style=self, box=box, text_params=text_params)
 
 
 def _load_stamp_image(file_url):
