@@ -642,12 +642,13 @@ def build_stamp_style(sig_template, profile, stamp_text):
 			# Helvetica rather than fail the signature if it isn't installed.
 			from pyhanko.pdf_utils.font.opentype import GlyphAccumulatorFactory
 
+			font_path = os.path.join(_FONT_DIR, _BUNDLED_FONTS[family])
+			if not os.path.exists(font_path):
+				raise FileNotFoundError(font_path)
 			# The OpenType engine shapes text at its own size; it must match the
 			# text box's size or glyphs are spaced for the wrong size.
-			font = GlyphAccumulatorFactory(
-				os.path.join(_FONT_DIR, _BUNDLED_FONTS[family]), font_size=font_size
-			)
-		except ImportError:
+			font = GlyphAccumulatorFactory(font_path, font_size=font_size)
+		except (ImportError, FileNotFoundError):
 			frappe.log_error(title="DSC stamp font unavailable, using Helvetica")
 	if font is None:
 		font_name, avg_width = _STANDARD_FONTS.get(family, _STANDARD_FONTS["helvetica"])
