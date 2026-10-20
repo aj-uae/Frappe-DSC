@@ -79,14 +79,15 @@ func main() {
 		}
 	}()
 
-	// Start system tray icon
-	go systray.Run(onTrayReady(agentFP), onTrayExit)
-
-	// Wait for shutdown signal
+	// Start the system tray icon and wait for a shutdown signal. How the tray loop
+	// is driven differs per OS (macOS requires it on the main thread), see runTray.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	<-sigCh
+	runTray(agentFP, sigCh)
+}
 
+func shutdownOnSignal(sigCh <-chan os.Signal) {
+	<-sigCh
 	log.Println("Shutting down dsc-bridge...")
 	systray.Quit()
 }

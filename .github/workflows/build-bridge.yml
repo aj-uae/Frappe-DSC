@@ -108,6 +108,22 @@ jobs:
           chmod +x build.sh
           ./build.sh darwin-pkg
           pkgutil --payload-files build/dsc-bridge-1.0.0.pkg | head
+      - name: Smoke-test the .pkg (install, bridge answers on 127.0.0.1:4645)
+        run: |
+          echo "console user: $(stat -f %Su /dev/console)"
+          sudo installer -pkg build/dsc-bridge-1.0.0.pkg -target /
+          ok=""
+          for i in $(seq 1 15); do
+            if curl -s --max-time 3 https://127.0.0.1:4645/v1/status; then ok=1; break; fi
+            sleep 2
+          done
+          echo
+          CERT="$HOME/Library/Application Support/dsc-bridge/tls_cert.pem"
+          [ -f "$CERT" ] && openssl x509 -in "$CERT" -noout -startdate -enddate
+          cat /tmp/dsc-bridge.err.log /tmp/dsc-bridge.log 2>/dev/null | tail -40 || true
+          tail -40 "$HOME/Library/Application Support/dsc-bridge/bridge.log" 2>/dev/null || true
+          launchctl print "gui/$(id -u)/com.esign.dsc-bridge" 2>/dev/null | head -20 || true
+          [ -n "$ok" ] || { echo "bridge did not answer over trusted HTTPS"; exit 1; }
       - uses: actions/upload-artifact@v4
         with:
           name: dsc-bridge-macos
