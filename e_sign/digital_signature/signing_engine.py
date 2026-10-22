@@ -270,6 +270,34 @@ def prepare_pdf_for_signing(
 	}
 
 
+def _load_chain_cert(cert_b64):
+	"""Parse one intermediate cert sent by the bridge.
+
+	Some CAs (e.g. SignX) publish their AIA .cer as bare base64 or PEM text, and
+	the bridge forwards those bytes as-is, so the payload can be base64 of
+	base64. The chain is optional for the signature, so an unreadable entry is
+	logged and skipped rather than failing the whole signing.
+	"""
+	data = base64.b64decode(cert_b64)
+	stripped = data.strip()
+	if stripped.startswith(b"-----BEGIN"):
+		stripped = b"".join(
+			line for line in stripped.splitlines() if line and not line.startswith(b"-----")
+		)
+	if stripped[:1] != b"\x30":
+		try:
+			data = base64.b64decode(stripped, validate=False)
+		except (ValueError, TypeError):
+			pass
+	try:
+		cert = asn1_x509.Certificate.load(data)
+		cert.native  # force a full parse so bad DER fails here
+		return cert
+	except Exception:
+		frappe.log_error(title="DSC: skipped unreadable chain certificate")
+		return None
+
+
 def finalize_signed_pdf(
 	session_id,
 	signature_bytes_b64,
@@ -309,9 +337,10 @@ def finalize_signed_pdf(
 	signer_cert = asn1_x509.Certificate.load(cert_der)
 
 	chain_certs = []
-	if cert_chain_der_b64:
-		for c in cert_chain_der_b64:
-			chain_certs.append(asn1_x509.Certificate.load(base64.b64decode(c)))
+	for c in cert_chain_der_b64 or []:
+		chain_cert = _load_chain_cert(c)
+		if chain_cert is not None:
+			chain_certs.append(chain_cert)
 
 	signed_attrs_der = base64.b64decode(session["signed_attrs_b64"])
 	signed_attrs = cms.CMSAttributes.load(signed_attrs_der)
