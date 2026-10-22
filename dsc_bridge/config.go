@@ -156,6 +156,19 @@ func DefaultPKCS11Paths() []string {
 			"/usr/local/lib/wd*/*[pP]11*.dylib",
 			"/usr/local/lib/wd*/lib/*.dylib",
 			"/Library/*/*/lib/*[pP][kK][cC][sS]*.dylib",
+			// Feitian ePass2003 / Hypersecu HYP2003 ship a "castle" module, sometimes
+			// versioned (libcastle_v2.1.0.0.dylib) or in a vendor folder.
+			"/usr/local/lib/*[cC]astle*.dylib",
+			"/usr/local/lib/*/*[cC]astle*.dylib",
+			"/usr/local/lib/*/lib/*[cC]astle*.dylib",
+			"/Library/*/*[cC]astle*.dylib",
+			"/Library/*/lib/*[cC]astle*.dylib",
+			"/Library/*/*/lib/*[cC]astle*.dylib",
+			"/usr/local/lib/*[hH][yY][pP]*/*.dylib",
+			"/Library/*[hH][yY][pP]*/*.dylib",
+			"/Library/*[hH][yY][pP]*/lib/*.dylib",
+			"/Applications/*[hH][yY][pP]*.app/Contents/Frameworks/*[pP][kK][cC][sS]*.dylib",
+			"/Applications/*[hH][yY][pP]*.app/Contents/Frameworks/*[cC]astle*.dylib",
 			"/Library/Frameworks/*.framework/Versions/*/*[pP][kK][cC][sS]*.dylib",
 		} {
 			matches, _ := filepath.Glob(pattern)
