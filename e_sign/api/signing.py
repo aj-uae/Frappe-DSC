@@ -81,7 +81,7 @@ def initiate(doctype, docname, cert_der_b64, signer_lat=None, signer_lng=None, s
 			"source_name": docname,
 			"status": "Pending",
 		},
-		fieldname=["name", "profile", "signature_template", "expected_signer_user"],
+		fieldname=["name", "profile", "signature_template", "expected_signer_user", "rule"],
 		as_dict=True,
 	)
 
