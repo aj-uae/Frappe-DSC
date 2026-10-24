@@ -138,6 +138,12 @@ func fetchDER(url string) ([]byte, error) {
 		}
 		return block.Bytes, nil
 	}
+	// Some CAs (e.g. SignX) serve the .cer as bare base64 text with no PEM header.
+	if trimmed := bytes.TrimSpace(body); len(trimmed) > 0 && trimmed[0] != 0x30 {
+		if der, err := base64.StdEncoding.DecodeString(string(bytes.Join(bytes.Fields(trimmed), nil))); err == nil {
+			return der, nil
+		}
+	}
 	return body, nil
 }
 

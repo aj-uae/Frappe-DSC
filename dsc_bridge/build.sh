@@ -148,8 +148,39 @@ EOF
     mkdir -p "$SCRIPTS"
     cat > "$SCRIPTS/postinstall" <<'EOF'
 #!/bin/bash
-set -e
-"/Applications/DSC Bridge.app/Contents/MacOS/dsc-bridge" --post-install
+# The .pkg runs this as root, but the bridge must run as the signer: its TLS cert and
+# LaunchAgent live in the logged-in user's home, and launchd must start it in their session.
+BIN="/Applications/DSC Bridge.app/Contents/MacOS/dsc-bridge"
+CONSOLE_USER=$(stat -f %Su /dev/console)
+if [ -z "$CONSOLE_USER" ] || [ "$CONSOLE_USER" = "root" ] || [ "$CONSOLE_USER" = "loginwindow" ]; then
+    echo "dsc-bridge: no logged-in user; open DSC Bridge from Applications after logging in"
+    exit 0
+fi
+CONSOLE_UID=$(id -u "$CONSOLE_USER")
+USER_HOME=$(dscl . -read "/Users/$CONSOLE_USER" NFSHomeDirectory | awk '{print $2}')
+
+# Stop any copy left over from an earlier install (older .pkg versions loaded it as root,
+# where it holds port 4645 with a cert macOS rejects), then set up and start as the user.
+launchctl bootout system/com.esign.dsc-bridge 2>/dev/null || true
+launchctl unload /var/root/Library/LaunchAgents/com.esign.dsc-bridge.plist 2>/dev/null || true
+rm -f /var/root/Library/LaunchAgents/com.esign.dsc-bridge.plist
+pkill -u root -f "DSC Bridge.app/Contents/MacOS/dsc-bridge" 2>/dev/null || true
+launchctl bootout "gui/$CONSOLE_UID/com.esign.dsc-bridge" 2>/dev/null || true
+# Older .pkg versions ran as root with HOME pointing at the signer's home, leaving the
+# data dir (cert, key, config, log) owned by root, so the signer's bridge could not
+# read its own files and post-install failed before the LaunchAgent was written.
+DATA_DIR="$USER_HOME/Library/Application Support/dsc-bridge"
+[ -d "$DATA_DIR" ] && chown -R "$CONSOLE_USER":staff "$DATA_DIR"
+[ -d "$USER_HOME/Library/LaunchAgents" ] && chown "$CONSOLE_USER":staff "$USER_HOME/Library/LaunchAgents"
+rm -f /tmp/dsc-bridge.log /tmp/dsc-bridge.err.log
+launchctl asuser "$CONSOLE_UID" sudo -u "$CONSOLE_USER" "$BIN" --post-install || true
+
+# Trusting a cert in the System keychain needs root, so do it here for the user's cert.
+CERT="$USER_HOME/Library/Application Support/dsc-bridge/tls_cert.pem"
+if [ -f "$CERT" ]; then
+    security delete-certificate -c dsc-bridge /Library/Keychains/System.keychain 2>/dev/null || true
+    security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain "$CERT" || true
+fi
 exit 0
 EOF
     chmod +x "$SCRIPTS/postinstall"

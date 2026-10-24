@@ -14,12 +14,14 @@ Uses pyHanko's "interrupted signing" workflow:
 
 import asyncio
 import base64
+import dataclasses
 import hashlib
 import json
 import os
 import uuid
 from datetime import datetime, timezone
 from io import BytesIO
+from zoneinfo import ZoneInfo
 
 import frappe
 from frappe.utils import now_datetime
@@ -27,6 +29,13 @@ from frappe.utils import now_datetime
 from e_sign.digital_signature.signature_anchor import locate_signature_anchor
 
 from asn1crypto import algos, cms, core, x509 as asn1_x509
+from pyhanko import stamp as pyhanko_stamp
+from pyhanko.pdf_utils import layout as pyhanko_layout
+from pyhanko.pdf_utils import text as pyhanko_text
+from pyhanko.pdf_utils import generic as pdf_generic
+from pyhanko.pdf_utils.font import api as pyhanko_font_api
+from pyhanko.pdf_utils.font.basic import SimpleFontEngine, SimpleFontEngineFactory
+from pyhanko.pdf_utils.images import PdfImage
 from pyhanko.pdf_utils.incremental_writer import IncrementalPdfFileWriter
 from pyhanko.sign import fields as sig_fields
 from pyhanko.sign.signers.pdf_byterange import PreparedByteRangeDigest
@@ -155,6 +164,7 @@ def prepare_pdf_for_signing(
 	location = signer_location_text or settings.default_location or ""
 	signer_name = profile.certificate_common_name or profile.label or profile.profile_name
 	stamp_text = build_stamp_text(sig_template, profile, signer_location_text=location)
+	stamp_style = build_stamp_style(sig_template, profile, stamp_text)
 
 	session_id = str(uuid.uuid4())
 	signer_cert = asn1_x509.Certificate.load(cert_der)
@@ -189,6 +199,7 @@ def prepare_pdf_for_signing(
 	pdf_signer = PdfSigner(
 		signature_meta=sig_meta,
 		signer=placeholder_signer,
+		stamp_style=stamp_style,
 		new_field_spec=new_field,
 	)
 
@@ -259,6 +270,34 @@ def prepare_pdf_for_signing(
 	}
 
 
+def _load_chain_cert(cert_b64):
+	"""Parse one intermediate cert sent by the bridge.
+
+	Some CAs (e.g. SignX) publish their AIA .cer as bare base64 or PEM text, and
+	the bridge forwards those bytes as-is, so the payload can be base64 of
+	base64. The chain is optional for the signature, so an unreadable entry is
+	logged and skipped rather than failing the whole signing.
+	"""
+	data = base64.b64decode(cert_b64)
+	stripped = data.strip()
+	if stripped.startswith(b"-----BEGIN"):
+		stripped = b"".join(
+			line for line in stripped.splitlines() if line and not line.startswith(b"-----")
+		)
+	if stripped[:1] != b"\x30":
+		try:
+			data = base64.b64decode(stripped, validate=False)
+		except (ValueError, TypeError):
+			pass
+	try:
+		cert = asn1_x509.Certificate.load(data)
+		cert.native  # force a full parse so bad DER fails here
+		return cert
+	except Exception:
+		frappe.log_error(title="DSC: skipped unreadable chain certificate")
+		return None
+
+
 def finalize_signed_pdf(
 	session_id,
 	signature_bytes_b64,
@@ -298,9 +337,10 @@ def finalize_signed_pdf(
 	signer_cert = asn1_x509.Certificate.load(cert_der)
 
 	chain_certs = []
-	if cert_chain_der_b64:
-		for c in cert_chain_der_b64:
-			chain_certs.append(asn1_x509.Certificate.load(base64.b64decode(c)))
+	for c in cert_chain_der_b64 or []:
+		chain_cert = _load_chain_cert(c)
+		if chain_cert is not None:
+			chain_certs.append(chain_cert)
 
 	signed_attrs_der = base64.b64decode(session["signed_attrs_b64"])
 	signed_attrs = cms.CMSAttributes.load(signed_attrs_der)
@@ -560,12 +600,16 @@ def build_stamp_text(sig_template, profile, signer_location_text=None):
 		str with the stamp text
 	"""
 	lines = []
-
-	if sig_template.stamp_show_digitally_signed_by:
-		lines.append("Digitally signed by")
-
-	if sig_template.stamp_show_signer_name:
+	if not sig_template:
 		name = profile.certificate_common_name or profile.label or profile.profile_name
+		return f"Digitally signed by {name}"
+
+	name = profile.certificate_common_name or profile.label or profile.profile_name
+	if sig_template.stamp_show_digitally_signed_by and sig_template.stamp_show_signer_name:
+		lines.append(f"Digitally signed by {name}")
+	elif sig_template.stamp_show_digitally_signed_by:
+		lines.append("Digitally signed")
+	elif sig_template.stamp_show_signer_name:
 		lines.append(name)
 
 	if sig_template.stamp_show_designation:
@@ -575,7 +619,8 @@ def build_stamp_text(sig_template, profile, signer_location_text=None):
 
 	if sig_template.stamp_show_timestamp:
 		fmt = sig_template.stamp_timestamp_format or "%d-%m-%Y %H:%M:%S %Z"
-		lines.append(f"Date: {fmt}")  # actual time filled at sign time
+		now = datetime.now(ZoneInfo(frappe.utils.get_system_timezone()))
+		lines.append(f"Date: {now.strftime(fmt)}")
 
 	if sig_template.stamp_show_reason:
 		settings = frappe.get_single("DSC Settings")
@@ -590,6 +635,239 @@ def build_stamp_text(sig_template, profile, signer_location_text=None):
 		lines.append(f"Location: {location}")
 
 	return "\n".join(lines)
+
+
+_STANDARD_FONTS = {
+	# PDF standard-14 fonts need no embedding; avg_width is a rough glyph
+	# width (in em) pyHanko uses to wrap and size the text box.
+	"helvetica": ("Helvetica", 0.5),
+	"helvetica-bold": ("Helvetica-Bold", 0.55),
+	"times": ("Times-Roman", 0.45),
+	"times-roman": ("Times-Roman", 0.45),
+	"times-bold": ("Times-Bold", 0.5),
+	"courier": ("Courier", 0.6),
+}
+
+# Fonts shipped with the app and embedded into the PDF, so the stamp can match
+# the print format (Lato is the Rocin Design print font). Each font has a
+# <name>.metrics.json with its WinAnsi glyph widths (1000 units/em), generated
+# with fontTools from the .ttf, so no font library is needed at runtime.
+_BUNDLED_FONTS = {
+	"lato": "Lato-Regular",
+}
+_FONT_DIR = os.path.join(os.path.dirname(__file__), "fonts")
+
+
+class _EmbeddedTrueTypeEngine(SimpleFontEngine):
+	"""Single-byte (WinAnsi) TrueType font engine with real glyph widths."""
+
+	def __init__(self, writer, font_name):
+		with open(os.path.join(_FONT_DIR, font_name + ".metrics.json")) as f:
+			self.metrics = json.load(f)
+		self.font_file = os.path.join(_FONT_DIR, font_name + ".ttf")
+		super().__init__(writer, self.metrics["base_font"], 0.5)
+
+	def _encode(self, txt):
+		return txt.encode("cp1252", errors="replace")
+
+	def shape(self, txt):
+		m = self.metrics
+		raw = self._encode(txt)
+		width = 0
+		for code in raw:
+			idx = code - m["first_char"]
+			w = m["widths"][idx] if 0 <= idx < len(m["widths"]) else 0
+			width += w or m["missing_width"]
+		escaped = raw.replace(b"\\", b"\\\\").replace(b"(", b"\\(").replace(b")", b"\\)")
+		return pyhanko_font_api.ShapeResult(
+			graphics_ops=b"(" + escaped + b") Tj", x_advance=width / 1000, y_advance=0
+		)
+
+	def as_resource(self):
+		m = self.metrics
+		with open(self.font_file, "rb") as f:
+			font_bytes = f.read()
+		font_stream = pdf_generic.StreamObject(
+			{pdf_generic.NameObject("/Length1"): pdf_generic.NumberObject(len(font_bytes))},
+			stream_data=font_bytes,
+		)
+		font_stream.compress()
+		name = pdf_generic.NameObject
+		num = pdf_generic.NumberObject
+		descriptor = pdf_generic.DictionaryObject(
+			{
+				name("/Type"): name("/FontDescriptor"),
+				name("/FontName"): name("/" + m["base_font"]),
+				name("/Flags"): num(32),
+				name("/FontBBox"): pdf_generic.ArrayObject(map(num, m["bbox"])),
+				name("/ItalicAngle"): num(0),
+				name("/Ascent"): num(m["ascent"]),
+				name("/Descent"): num(m["descent"]),
+				name("/CapHeight"): num(m["cap_height"]),
+				name("/StemV"): num(80),
+				name("/MissingWidth"): num(m["missing_width"]),
+				name("/FontFile2"): self.writer.add_object(font_stream),
+			}
+		)
+		return pdf_generic.DictionaryObject(
+			{
+				name("/Type"): name("/Font"),
+				name("/Subtype"): name("/TrueType"),
+				name("/BaseFont"): name("/" + m["base_font"]),
+				name("/Encoding"): name("/WinAnsiEncoding"),
+				name("/FirstChar"): num(m["first_char"]),
+				name("/LastChar"): num(m["first_char"] + len(m["widths"]) - 1),
+				name("/Widths"): pdf_generic.ArrayObject(map(num, m["widths"])),
+				name("/FontDescriptor"): self.writer.add_object(descriptor),
+			}
+		)
+
+
+class _EmbeddedTrueTypeFactory(pyhanko_font_api.FontEngineFactory):
+	def __init__(self, font_name):
+		self.font_name = font_name
+
+	def create_font_engine(self, writer, obj_stream=None):
+		return _EmbeddedTrueTypeEngine(writer, self.font_name)
+
+
+def build_stamp_style(sig_template, profile, stamp_text):
+	"""Build the pyHanko stamp style from the template's Stamp Style settings.
+
+	Without an explicit style pyHanko draws its own default appearance
+	(monospace "Digitally signed by … Timestamp: … UTC" over the pyHanko logo,
+	with a thick border), ignoring every stamp option on the template.
+	"""
+	family = ((sig_template and sig_template.stamp_font_family) or "Helvetica").strip().lower()
+	# pyHanko writes the font size with %d, so a fractional size is silently
+	# truncated in the PDF while text is laid out at the full size.
+	font_size = max(round(float((sig_template and sig_template.stamp_font_size) or 8)), 1)
+	font = None
+	if family in _BUNDLED_FONTS and os.path.exists(os.path.join(_FONT_DIR, _BUNDLED_FONTS[family] + ".ttf")):
+		font = _EmbeddedTrueTypeFactory(_BUNDLED_FONTS[family])
+	if font is None:
+		font_name, avg_width = _STANDARD_FONTS.get(family, _STANDARD_FONTS["helvetica"])
+		font = SimpleFontEngineFactory(font_name, avg_width)
+	border = 1 if (sig_template and sig_template.stamp_border) else 0
+
+	background = None
+	if sig_template:
+		image_field = None
+		if sig_template.stamp_include_signature_image and profile.signature_image:
+			image_field = profile.signature_image
+		elif sig_template.stamp_include_seal_image and profile.seal_image:
+			image_field = profile.seal_image
+		if image_field:
+			background = _load_stamp_image(image_field)
+
+	return _RightAlignedTextStampStyle(
+		# pyHanko %-formats stamp_text with its own params; escape literal %.
+		stamp_text=stamp_text.replace("%", "%%"),
+		border_width=border,
+		background=background,
+		background_opacity=1.0,
+		inner_content_layout=pyhanko_layout.SimpleBoxLayoutRule(
+			# Flush right, like the "For <company>" and "Authorised Signatory"
+			# lines of the print formats.
+			x_align=pyhanko_layout.AxisAlignment.ALIGN_MAX,
+			y_align=pyhanko_layout.AxisAlignment.ALIGN_MID,
+			margins=pyhanko_layout.Margins(left=2, right=0, top=2, bottom=2),
+		),
+		text_box_style=pyhanko_text.TextBoxStyle(
+			font=font,
+			font_size=font_size,
+			# pyHanko's layout uses Fraction(width, height): leading must be an int.
+			leading=round(font_size * 1.25),
+			# No inner padding, so the text lines up with the print format's edge.
+			box_layout_rule=pyhanko_layout.SimpleBoxLayoutRule(
+				x_align=pyhanko_layout.AxisAlignment.ALIGN_MAX,
+				y_align=pyhanko_layout.AxisAlignment.ALIGN_MID,
+				margins=pyhanko_layout.Margins.uniform(0),
+			),
+		),
+	)
+
+
+_MAX_SEAL_HEIGHT = 72  # PDF points
+
+
+class _RightAlignedTextBox(pyhanko_text.TextBox):
+	"""pyHanko text box whose lines are right-aligned instead of left-aligned."""
+
+	def put_string_line(self, txt):
+		ops, extent = super().put_string_line(txt)
+		self._line_extents.append(extent)
+		return ops, extent
+
+	@property
+	def content(self):
+		return self._content
+
+	@content.setter
+	def content(self, content):
+		self._line_extents = []
+		pyhanko_text.TextBox.content.fset(self, content)
+		width = self._nat_text_width
+		# Shift each line right by its slack, then undo the shift so the next
+		# line starts from the left edge again.
+		self._wrapped_lines = [
+			b"%g 0 Td %s %g 0 Td" % (width - extent, ops, extent - width)
+			for ops, extent in zip(self._wrapped_lines, self._line_extents, strict=True)
+		]
+
+
+class _RightAlignedTextStamp(pyhanko_stamp.TextStamp):
+	def _text_layout(self):
+		self.text_box = tb = _RightAlignedTextBox(
+			self.style.text_box_style, writer=self.writer, resources=self.resources, box=None
+		)
+		params = self.get_default_text_params()
+		if self.text_params is not None:
+			params.update(self.text_params)
+		tb.content = self.style.stamp_text % params
+		return tb.render()
+
+	def _render_background(self):
+		# Inner content is rendered first, so the text width is known here: put
+		# the image (company seal) just left of the right-aligned text instead
+		# of at the far left of the box.
+		text_width = self.text_box.box.width
+		seal_margin = max((self.box.height - _MAX_SEAL_HEIGHT) / 2, 0)
+		style = self.style
+		self.style = dataclasses.replace(
+			style,
+			background_layout=pyhanko_layout.SimpleBoxLayoutRule(
+				x_align=pyhanko_layout.AxisAlignment.ALIGN_MAX,
+				y_align=pyhanko_layout.AxisAlignment.ALIGN_MID,
+				# Cap the seal at ~25 mm so a tall signature box (which can overlap
+				# the surrounding print lines, as a rubber stamp would) doesn't make
+				# it huge; it stays vertically centred on the text.
+				margins=pyhanko_layout.Margins(
+					left=0, right=text_width + 4, top=seal_margin, bottom=seal_margin
+				),
+			),
+		)
+		try:
+			return super()._render_background()
+		finally:
+			self.style = style
+
+
+class _RightAlignedTextStampStyle(pyhanko_stamp.TextStampStyle):
+	def create_stamp(self, writer, box, text_params):
+		return _RightAlignedTextStamp(writer=writer, style=self, box=box, text_params=text_params)
+
+
+def _load_stamp_image(file_url):
+	"""Load a profile image (signature/seal) attached as a Frappe File."""
+	try:
+		from PIL import Image
+
+		file_doc = frappe.get_doc("File", {"file_url": file_url})
+		return PdfImage(Image.open(BytesIO(file_doc.get_content())))
+	except Exception:
+		frappe.log_error(title="DSC stamp image could not be loaded")
+		return None
 
 
 def get_session_info(session_id):

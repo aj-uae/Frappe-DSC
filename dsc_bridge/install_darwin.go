@@ -87,6 +87,11 @@ func PreUninstall() error {
 }
 
 func installCertToKeychain(certPath string) error {
+	// The .pkg postinstall runs --post-install as the signer and then trusts the cert
+	// itself as root; calling `security -d` without root would only pop an auth dialog.
+	if os.Geteuid() != 0 {
+		return fmt.Errorf("not root; the installer trusts %s in the System keychain", certPath)
+	}
 	// `-d` would target the admin (System) keychain and requires root. The
 	// .pkg postinstall runs as root, so this puts the cert in the System
 	// keychain where every user on the Mac trusts it.

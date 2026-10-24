@@ -7,7 +7,7 @@ creates DSC Signing Requests on match.
 """
 
 import frappe
-from frappe.utils import cint, flt
+from frappe.utils import cint
 
 
 def evaluate_on_submit(doc, method):
@@ -181,9 +181,12 @@ def _coerce_and_compare(field_value, target_value, op):
 	"""Compare values with type coercion. Tries numeric comparison first,
 	falls back to string comparison.
 	"""
+	# Only compare numerically when both sides really are numbers: frappe's
+	# flt() turns any non-numeric string into 0.0 instead of raising, which made
+	# every string "equals" condition true and every "not_equals" false.
 	try:
-		fv = flt(field_value)
-		tv = flt(target_value)
+		fv = float(field_value)
+		tv = float(target_value)
 		if op == "eq":
 			return fv == tv
 		if op == "ne":

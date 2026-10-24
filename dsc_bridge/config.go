@@ -123,7 +123,16 @@ func DefaultPKCS11Paths() []string {
 			"/usr/lib/x86_64-linux-gnu/pkcs11/p11-kit-trust.so",
 		}
 	case "darwin":
-		return []string{
+		paths := []string{
+			// --- WatchData ProxKey (macOS driver installs under /usr/local/lib) ---
+			"/usr/local/lib/libwdpkcs.dylib",
+			"/usr/local/lib/libWDPKCS.dylib",
+			"/usr/local/lib/libSignatureP11.dylib",
+			"/usr/local/lib/libProxKeyP11.dylib",
+			"/Library/WatchData/ProxKey/lib/libwdpkcs.dylib",
+			// --- Feitian ePass2003 / Hypersecu (Castle library) ---
+			"/usr/local/lib/libcastle.1.0.0.dylib",
+			"/usr/local/lib/libcastle.dylib",
 			// --- SoftHSM2 (testing) ---
 			"/usr/local/lib/softhsm/libsofthsm2.so",
 			"/opt/homebrew/lib/softhsm/libsofthsm2.so",
@@ -137,9 +146,51 @@ func DefaultPKCS11Paths() []string {
 			"/usr/local/lib/libykcs11.dylib",
 			"/opt/homebrew/lib/libykcs11.dylib",
 		}
+		// Token vendors name their macOS PKCS#11 module inconsistently, so also
+		// pick up any PKCS#11-looking dylib installed in the usual driver folders.
+		for _, pattern := range []string{
+			"/usr/local/lib/*[pP][kK][cC][sS]*.dylib",
+			"/usr/local/lib/*[pP]11*.dylib",
+			// ProxKey's macOS driver installs into its own folder, e.g. /usr/local/lib/wdProxKeyUsbKeyTool/
+			"/usr/local/lib/wd*/*[pP][kK][cC][sS]*.dylib",
+			"/usr/local/lib/wd*/*[pP]11*.dylib",
+			"/usr/local/lib/wd*/lib/*.dylib",
+			"/Library/*/*/lib/*[pP][kK][cC][sS]*.dylib",
+			// Feitian ePass2003 / Hypersecu HYP2003 ship a "castle" module, sometimes
+			// versioned (libcastle_v2.1.0.0.dylib) or in a vendor folder.
+			"/usr/local/lib/*[cC]astle*.dylib",
+			"/usr/local/lib/*/*[cC]astle*.dylib",
+			"/usr/local/lib/*/lib/*[cC]astle*.dylib",
+			"/Library/*/*[cC]astle*.dylib",
+			"/Library/*/lib/*[cC]astle*.dylib",
+			"/Library/*/*/lib/*[cC]astle*.dylib",
+			"/usr/local/lib/*[hH][yY][pP]*/*.dylib",
+			"/Library/*[hH][yY][pP]*/*.dylib",
+			"/Library/*[hH][yY][pP]*/lib/*.dylib",
+			"/Applications/*[hH][yY][pP]*.app/Contents/Frameworks/*[pP][kK][cC][sS]*.dylib",
+			"/Applications/*[hH][yY][pP]*.app/Contents/Frameworks/*[cC]astle*.dylib",
+			"/Library/Frameworks/*.framework/Versions/*/*[pP][kK][cC][sS]*.dylib",
+		} {
+			matches, _ := filepath.Glob(pattern)
+			for _, m := range matches {
+				if !containsPath(paths, m) {
+					paths = append(paths, m)
+				}
+			}
+		}
+		return paths
 	default:
 		return nil
 	}
+}
+
+func containsPath(paths []string, p string) bool {
+	for _, x := range paths {
+		if x == p {
+			return true
+		}
+	}
+	return false
 }
 
 // LoadConfig reads config from the data directory, falling back to defaults.

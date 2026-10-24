@@ -49,6 +49,22 @@
 		if (prev !== undefined && prev < 1 && cur === 1) {
 			frm.__dsc_just_submitted = true;
 		}
+		// Same for a workflow action (e.g. "Approve" on an already-submitted
+		// invoice) and for an e-invoice IRN being generated: rules can create
+		// the signing request on either, and the signer should get the PIN
+		// prompt straight away rather than look for the "Sign with DSC" button.
+		const prevState = frm.__dsc_last_workflow_state;
+		const curState = frm.doc.workflow_state;
+		frm.__dsc_last_workflow_state = curState;
+		if (prevState !== undefined && curState && prevState !== curState) {
+			frm.__dsc_just_submitted = true;
+		}
+		const prevIrn = frm.__dsc_last_irn;
+		const curIrn = frm.doc.irn || "";
+		frm.__dsc_last_irn = curIrn;
+		if (prevIrn !== undefined && !prevIrn && curIrn) {
+			frm.__dsc_just_submitted = true;
+		}
 		refreshDscStatus(frm);
 	});
 
@@ -58,11 +74,17 @@
 			args: { doctype: frm.doctype, docname: frm.doc.name },
 			callback(r) {
 				const info = r && r.message;
-				if (!info || info.status === "Not Applicable") return;
+				if (!info || info.status === "Not Applicable") {
+					// The action just taken created no request for this user;
+					// don't let it trigger a prompt on some later refresh.
+					frm.__dsc_just_submitted = false;
+					return;
+				}
 
 				renderStatusIndicator(frm, info);
 				renderActionButtons(frm, info);
 				maybeAutoPromptSign(frm, info);
+				frm.__dsc_just_submitted = false;
 			},
 		});
 	}
@@ -78,8 +100,9 @@
 	function maybeAutoPromptSign(frm, info) {
 		if (frm.__dsc_auto_prompted) return;
 		if (!info.can_sign) return;
-		// Only right after a live submit in this session (flag set by the
-		// form-refresh handler above), never on merely opening a submitted doc.
+		// Only right after a live submit, workflow action or IRN generation in
+		// this session (flag set by the form-refresh handler above), never on
+		// merely opening a submitted doc.
 		if (!frm.__dsc_just_submitted) return;
 
 		frm.__dsc_auto_prompted = true;
