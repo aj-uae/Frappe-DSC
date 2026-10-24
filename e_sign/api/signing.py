@@ -459,6 +459,8 @@ def finalize(session_id, signature_bytes_b64, cert_der_b64, cert_chain_der_b64=N
 				"signed_file": file_doc.name,
 			})
 
+		_close_signer_todos(signing_request_name)
+
 		# Log success
 		log_event(signing_request_name, "Request Signed", {
 			"duration_seconds": duration,
@@ -663,6 +665,7 @@ def cancel(signing_request, reason=""):
 		frappe.db.set_value("DSC Document Sign", doc.source_name, "status", "Cancelled")
 
 	log_event(signing_request, "Request Cancelled", {"reason": reason})
+	_close_signer_todos(signing_request)
 
 	_run_dev_hooks(
 		"dsc_on_decline",
@@ -787,3 +790,17 @@ def send_signed_notification(doctype, docname, signing_request_name):
 			f"<p>The signed PDF is attached to the document.</p>"
 		),
 	)
+
+
+def _close_signer_todos(signing_request_name):
+	"""Close the signer's "Sign <doc>" ToDo once the request is signed or cancelled.
+
+	The request's status is written with db.set_value (no doc hooks), so
+	Frappe never closes the assignment by itself and it stays Open.
+	"""
+	from frappe.desk.form.assign_to import close_all_assignments
+
+	try:
+		close_all_assignments("DSC Signing Request", signing_request_name, ignore_permissions=True)
+	except Exception:
+		frappe.log_error(title="DSC: closing signer ToDo failed")
