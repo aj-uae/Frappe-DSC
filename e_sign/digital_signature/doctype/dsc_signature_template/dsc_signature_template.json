@@ -30,7 +30,8 @@
   "stamp_font_family",
   "stamp_font_size",
   "column_break_stamp_style",
-  "stamp_border"
+  "stamp_border",
+  "stamp_alignment"
  ],
  "fields": [
   {
@@ -186,10 +187,18 @@
    "fieldname": "stamp_border",
    "fieldtype": "Check",
    "label": "Show Border"
+  },
+  {
+   "default": "Right",
+   "description": "Which side of the signature box the stamp text lines up with. Right suits invoices and orders; Left suits letters.",
+   "fieldname": "stamp_alignment",
+   "fieldtype": "Select",
+   "label": "Stamp Alignment",
+   "options": "Right\nLeft"
   }
  ],
  "links": [],
- "modified": "2026-04-16 00:00:00.000000",
+ "modified": "2026-10-25 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Digital signature",
  "name": "DSC Signature Template",
