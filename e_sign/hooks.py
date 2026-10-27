@@ -71,6 +71,10 @@ _RULE_ENGINE_EVENTS = {
 	"on_submit": "e_sign.digital_signature.rule_engine.evaluate_on_submit",
 	"on_update_after_submit": "e_sign.digital_signature.rule_engine.evaluate_on_update",
 	"on_change": "e_sign.digital_signature.rule_engine.evaluate_on_change",
+	# Cancelled / deleted documents can't be signed: retire their open requests
+	# and close the signer's ToDo.
+	"on_cancel": "e_sign.digital_signature.source_lifecycle.on_source_cancel",
+	"on_trash": "e_sign.digital_signature.source_lifecycle.on_source_trash",
 }
 
 doc_events = {dt: dict(_RULE_ENGINE_EVENTS) for dt in _get_tracked_doctypes()}

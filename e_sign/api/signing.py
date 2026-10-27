@@ -9,6 +9,12 @@ to orchestrate the three-way signing flow:
 import frappe
 from frappe.utils import now_datetime, time_diff_in_seconds
 
+from e_sign.digital_signature.source_lifecycle import (
+	OPEN_STATUSES,
+	cancel_open_requests,
+	source_is_cancelled,
+)
+
 
 def _run_dev_hooks(hook_name, **kwargs):
 	"""Invoke developer hooks declared in other apps' hooks.py.
@@ -87,6 +93,10 @@ def initiate(doctype, docname, cert_der_b64, signer_lat=None, signer_lng=None, s
 
 	if not signing_request:
 		frappe.throw(f"No pending signing request found for {doctype} {docname}")
+
+	if source_is_cancelled(doctype, docname):
+		cancel_open_requests(doctype, docname, reason=f"{doctype} {docname} is cancelled")
+		frappe.throw(f"{doctype} {docname} is cancelled, so it can't be signed.")
 
 	# Validate the current user is the expected signer
 	if signing_request.expected_signer_user and signing_request.expected_signer_user != frappe.session.user:
@@ -555,6 +565,15 @@ def get_signing_status(doctype, docname):
 
 	if not requests:
 		return {"status": "Not Applicable", "signing_requests": [], "can_sign": False}
+
+	# A cancelled document can't be signed. Retire any request still open on it
+	# (e.g. one created before the on_cancel hook existed) so the form stops
+	# showing "Awaiting Signature" and the signer's ToDo closes.
+	if any(r.status in OPEN_STATUSES for r in requests) and source_is_cancelled(doctype, docname):
+		cancelled = cancel_open_requests(doctype, docname, reason=f"{doctype} {docname} is cancelled")
+		for r in requests:
+			if r.name in cancelled:
+				r.status = "Cancelled"
 
 	# Auto-recover stale "In Progress" requests. A real signing completes in well
 	# under a minute; anything still "In Progress" past the threshold is an
