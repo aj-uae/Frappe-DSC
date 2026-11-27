@@ -15,6 +15,7 @@ from frappe.model.document import Document
 _VERSIONED_FIELDS = (
 	"target_doctype",
 	"print_format",
+	"letter_head",
 	"stamp_show_signer_name",
 	"stamp_show_designation",
 	"stamp_show_digitally_signed_by",

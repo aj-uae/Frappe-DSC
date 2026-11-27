@@ -26,6 +26,21 @@ Each **DSC Signature Field** row defines a rectangle: a **page number** and the
     pyHanko uses PDF points with the **origin at the bottom-left** of the page. A US
     Letter page is 612 × 792 pt. `x`/`y` is the bottom-left corner of the stamp.
 
+### The page being signed
+
+The PDF that gets signed is built the same way as a normal print download of the
+template's **Print Format**: with that format's own PDF engine (for example Chrome, set
+in the Print Format's *PDF Generator*) and a letter head.
+
+- **Letter Head** on the template, if set, is the letter head the signed copy is
+  printed with.
+- Left empty, the document's own letter head is used (or the site default), exactly as
+  the print view shows it.
+
+Set the template's Letter Head when the placement rectangle was measured on a
+particular letter head: a different header height moves everything under it, and the
+stamp would no longer sit in the space the format left for it.
+
 ## The visual designer
 
 The DSC Signature Template form provides a drag-and-drop designer so you do not have
