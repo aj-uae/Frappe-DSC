@@ -114,7 +114,12 @@ def prepare_pdf_for_signing(
 		dict with session_id, hash_to_sign (hex of SignedAttrs hash), hash_algorithm, expected_cert_fingerprint
 	"""
 	if pdf_bytes is None:
-		pdf_bytes = generate_pdf_from_print_format(doctype, docname, print_format)
+		pdf_bytes = generate_pdf_from_print_format(
+			doctype,
+			docname,
+			print_format,
+			letterhead=(sig_template.get("letter_head") if sig_template else None) or None,
+		)
 
 	if placement:
 		# Interactive placement (uploaded document) — coordinates already in
@@ -569,21 +574,41 @@ def verify_signed_pdf(pdf_bytes):
 		return {"is_valid": False, "error": str(e)}
 
 
-def generate_pdf_from_print_format(doctype, docname, print_format):
+def generate_pdf_from_print_format(doctype, docname, print_format, letterhead=None):
 	"""Generate PDF bytes from a Frappe print format.
 
 	Args:
 		doctype: DocType name
 		docname: document name
 		print_format: Print Format name
+		letterhead: Letter Head name to print with; None uses the document's own
+			letter head (or the site default), as a normal print does
 
 	Returns:
 		bytes of the generated PDF
 	"""
-	from frappe.utils.pdf import get_pdf
-
-	html = frappe.get_print(doctype, docname, print_format=print_format)
-	pdf_bytes = get_pdf(html)
+	# Let Frappe build the PDF the same way a normal print download does: with
+	# the print format's own engine (for example Chrome) and the letter head the
+	# signature template names, else the document's own. Rendering the HTML and then calling get_pdf() always used
+	# wkhtmltopdf, which skews formats designed for Chrome.
+	#
+	# frappe.get_print() prefers form_dict.pdf_generator over its argument, and
+	# signing can run inside a request that set it, so clear it for this call.
+	# get_print() restores form_dict itself; the finally block covers versions
+	# that do not.
+	form_dict = frappe.local.form_dict
+	had_generator = "pdf_generator" in form_dict
+	saved_generator = form_dict.pop("pdf_generator", None)
+	try:
+		pdf_bytes = frappe.get_print(
+			doctype, docname, print_format=print_format, letterhead=letterhead, as_pdf=True
+		)
+	finally:
+		# get_print() may swap in a fresh form_dict, so look it up again.
+		form_dict = frappe.local.form_dict
+		form_dict.pop("pdf_generator", None)
+		if had_generator:
+			form_dict["pdf_generator"] = saved_generator
 	return pdf_bytes
 
 

@@ -9,6 +9,7 @@
   "template_name",
   "target_doctype",
   "print_format",
+  "letter_head",
   "column_break_template",
   "version",
   "is_active",
@@ -61,6 +62,13 @@
    "label": "Print Format",
    "options": "Print Format",
    "reqd": 1
+  },
+  {
+   "fieldname": "letter_head",
+   "fieldtype": "Link",
+   "label": "Letter Head",
+   "options": "Letter Head",
+   "description": "Letter head the signed copy is printed with. Leave empty to use the document's own letter head. Set it when the signature placement was measured on a particular letter head."
   },
   {
    "fieldname": "column_break_template",
@@ -198,7 +206,7 @@
   }
  ],
  "links": [],
- "modified": "2026-10-25 12:00:00.000000",
+ "modified": "2026-11-27 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Digital signature",
  "name": "DSC Signature Template",
