@@ -115,7 +115,9 @@ def prepare_pdf_for_signing(
 	"""
 	if pdf_bytes is None:
 		pdf_bytes = generate_pdf_from_print_format(
-			doctype, docname, print_format,
+			doctype,
+			docname,
+			print_format,
 			letterhead=(sig_template.get("letter_head") if sig_template else None) or None,
 		)
 
